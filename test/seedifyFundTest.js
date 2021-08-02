@@ -1,97 +1,115 @@
-const Seedify = artifacts.require('SeedifyFundsContract');
+const { assert } = require('chai');
+const truffleAssert = require('truffle-assertions');
 
-// test case to check the smartcontract deployed correctly or not.
-contract("SeedifyFund", async accounts => {
-  it("is deployed correctly?", async () => {
-    const SeedifyInstance = await Seedify.deployed();
-    //console.log(SeedifyInstance.address);
-    assert(SeedifyInstance.address !== '');
-  });
-});
+const SMD = artifacts.require('./SeedifyFundsContract.sol');
+const Token = artifacts.require('./InitializableERC20.sol');
 
-// test case written to start the token sale
-contract('SeedifyFund', async accounts => {
-  it('is token sale is started?', async () => {
-    const SeedifyInstance = await Seedify.deployed();
-    const StartTime = await SeedifyInstance.saleStartTime();
-    assert(Date.now() > StartTime);
-  });
-});
+require('chai')
+    .use(require('chai-as-promised'))
+    .should();
 
-//Add and check the address in Whitelist tier One
-contract("SeedifyFund", async accounts => {
-  it("Add and check the address in Whitelist tier One", async () => {
-    const SeedifyInstance = await Seedify.deployed();
-    const accounts = await web3.eth.getAccounts();
-    await SeedifyInstance.addWhitelistOne(accounts[0]);
-    const result = await SeedifyInstance.getWhitelistOne(accounts[0]);
-    assert(result != false);
+contract('SMD', (accounts) => {
+    let instance, token;
+    const totalSupply = 200000000000000000000;
+    let currentTime = Math.floor(Date.now()/1000);
+    let eachTierSupply = 10000000000000000000;
+    before(async() => {
+        token = await Token.new()
+        await token.init(accounts[0], totalSupply.toString(), "BUSD", "LP", 18);
+        instance = await SMD.new("100000000000000000000", currentTime + 30, currentTime + 60, accounts[1], eachTierSupply.toString(), eachTierSupply.toString(), eachTierSupply.toString(), eachTierSupply.toString(), eachTierSupply.toString(), eachTierSupply.toString(), eachTierSupply.toString(), eachTierSupply.toString(), eachTierSupply.toString(), 3, token.address);
+    })
 
-  });
-});
+    describe('Deployment', async() => {
+        it('deploys successfully', async() => {
+            const address = instance.address;
+            assert.notEqual(address, 0x0);
+            assert.notEqual(address, '');
+            assert.notEqual(address, null);
+            assert.notEqual(address, undefined);
+        })
 
-//Add and check the address in Whitelist tier two
-contract("SeedifyFund", async accounts => {
-  it("Add and check the address in Whitelist tier two", async () => {
-    const SeedifyInstance = await Seedify.deployed();
-    const accounts = await web3.eth.getAccounts();
-    await SeedifyInstance.addWhitelistOne(accounts[1]);
-    const result = await SeedifyInstance.getWhitelistOne(accounts[1]);
-    assert(result != false);
+        it('has a token address', async() => {
+            const tokenAddress = await instance.tokenAddress();
+            tokenAddress.should.equal(token.address);
+        })
+    })
 
-  });
-});
+    describe('Tier updation', async() => {
+        it('should not allow others to add users to tiers', async() => {
+            await truffleAssert.reverts(instance.addWhitelistOne(accounts[2], {from: accounts[1]}), "Ownable: caller is not the owner");
+        })
 
-//Add and check the address in Whitelist tier three
-contract("SeedifyFund", async accounts => {
-  it("Add and check the address in Whitelist tier three", async () => {
-    const SeedifyInstance = await Seedify.deployed();
-    const accounts = await web3.eth.getAccounts();
-    await SeedifyInstance.addWhitelistOne(accounts[2]);
-    const result = await SeedifyInstance.getWhitelistOne(accounts[2]);
-    assert(result != false);
+        it('should allow owner to add users to tiers', async() => {
+            await instance.addWhitelistSeven(accounts[2]);
+            const added = await instance.getWhitelistSeven(accounts[2]);
+            added.should.equal(true, "Tier updated successfully");
+            const otherTier = await instance.getWhitelistNine(accounts[2]);
+            otherTier.should.equal(false, "Other tiers are not updated");
+        })
+    })
 
-  });
-});
+    describe('Payment', async() => {
+        it('should not allow users to pay before start time', async() => {
+            await instance.addWhitelistOne(accounts[0]);
+            const approval = 1000000000000000000;
+            await token.approve(instance.address, approval.toString());
+            await truffleAssert.reverts(instance.buyTokens(approval.toString()), "The sale is not started yet ");
+        })
 
-// To check the whitelist for tier one
-contract('SeedifyFund', async accounts => {
-  it("Pay One BNB to Check In WhiteListOne, is first tier payment working correctly?", async () => {
-    const instance = await Seedify.deployed();
+        it('should not allow users to pay more than maxCap after sale starts', async() => {
+            function timeout(ms) {
+                return new Promise(resolve => setTimeout(resolve, ms));
+            }
+            await timeout(30000);
+            const approval = 200000000000000000000;
+            await token.approve(instance.address, approval.toString());
+            await truffleAssert.reverts(instance.buyTokens(approval.toString()), "buyTokens: purchase would exceed max cap");
+        })
 
-    const value = 1;
-    const accounts = await web3.eth.getAccounts();
+        it('should not allow non-whitelisted address to invest', async() => {
+            const approval = 1000000000000000000;
+            await token.transfer(accounts[3], approval.toString());
+            await token.approve(instance.address, approval.toString(), {from: accounts[3]});
+            await truffleAssert.reverts(instance.buyTokens(approval.toString(), {from: accounts[3]}), "Not whitelisted");
+        })
 
-    await instance.addWhitelistOne(accounts[0]);
-    let result = await web3.eth.sendTransaction({ from: accounts[0], to: instance.address, value: value });
-    assert(result != false);
-  })
-})
 
-// To check the whitelist for tier two
-contract('SeedifyFund', async accounts => {
-  it("Pay Two BNB to Check In WhiteListTwo, is second tier payment working correctly?", async () => {
-    const instance = await Seedify.deployed();
+        it('should not allow users to pay more than tier limit', async() => {
+            const approval = 15000000000000000000;
+            await truffleAssert.reverts(instance.buyTokens(approval.toString()), "buyTokens: purchase would exceed Tier one max cap");
+        })
 
-    const value = 2;
-    const accounts = await web3.eth.getAccounts();
+        it('should not allow users to more than per user limit', async() => {
+            const approval = 6000000000000000000;
+            await truffleAssert.reverts(instance.buyTokens(approval.toString()), "buyTokens:You are investing more than your tier-1 limit!");
+        })
 
-    await instance.addWhitelistTwo(accounts[0]);
-    let result = await web3.eth.sendTransaction({ from: accounts[0], to: instance.address, value: value });
-    assert(result != false);
-  })
-})
+        it('should allow users to pay within the limits', async() => {
+            const approval = 2000000000000000000;
+            await instance.buyTokens(approval.toString());
+            const userBal = await instance.buyInOneTier(accounts[0]);
+            userBal.toString().should.equal(approval.toString(), "Payment successfull");
+            const ownerBal = await token.balanceOf(accounts[1]);
+            ownerBal.toString().should.equal(approval.toString(), "Owner balance updated");
+        })
 
-// To check the whitelist for tier three
-contract('SeedifyFund', async accounts => {
-  it("Pay Four BNB to Check In WhiteListThree, is third tier payment working correctly?", async () => {
-    const instance = await Seedify.deployed();
+        it('should allow users to reinvest under their limit', async() => {
+            const approval = 2000000000000000000;
+            await instance.buyTokens(approval.toString());
+            const userBal = await instance.buyInOneTier(accounts[0]);
+            userBal.toString().should.equal("4000000000000000000", "Balance updated successfully");
+            const ownerBal = await token.balanceOf(accounts[1]);
+            ownerBal.toString().should.equal("4000000000000000000", "Owner balance updated");
 
-    const value = 4;
-    const accounts = await web3.eth.getAccounts();
+        })
 
-    await instance.addWhitelistThree(accounts[0]);
-    let result = await web3.eth.sendTransaction({ from: accounts[0], to: instance.address, value: value });
-    assert(result != false);
-  })
+        it('should not allow users to invest after sale ends', async() => {
+            function timeout(ms) {
+                return new Promise(resolve => setTimeout(resolve, ms));
+            }
+            await timeout(30000);
+            const approval = 1000000000000000000;
+            await truffleAssert.reverts(instance.buyTokens(approval.toString()), "The sale is closed");
+        })
+    })
 })
